@@ -20,6 +20,8 @@ from PIL import Image
 
 from utils.telegram import fetch_posts, notify
 from utils import trigger
+from utils import rss as rss_store
+from utils.gh_pages import push_feed
 
 logger = logging.getLogger("kicksy.vk")
 
@@ -221,8 +223,14 @@ async def post_to_vk(session: aiohttp.ClientSession, post: dict):
     vk_post_id = result.get("post_id", "")
     vk_link    = f"https://vk.com/wall-{VK_GROUP_ID}_{vk_post_id}" if vk_post_id else ""
     logger.info("✅ Пост #%s опубликован в VK → %s", post["id"], vk_link)
+
+    # Обновляем RSS и пушим на GitHub Pages
+    tg_url = f"https://t.me/{TG_CHANNEL}/{post['id']}"
+    rss_store.add_post(post["id"], post["text"], post.get("photos", []), tg_url, vk_link)
+    await push_feed(rss_store.build_feed())
+
     preview = (post["text"] or "")[:80].replace("\n", " ")
-    await notify(session, f"✅ <b>VK</b> | Пост #{post['id']} опубликован\n{preview}\n\n🔗 VK: {vk_link}\n📢 TG: https://t.me/{TG_CHANNEL}/{post['id']}")
+    await notify(session, f"✅ <b>VK</b> | Пост #{post['id']} опубликован\n{preview}\n\n🔗 VK: {vk_link}\n📢 TG: {tg_url}")
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
