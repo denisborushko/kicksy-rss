@@ -1,11 +1,10 @@
 from __future__ import annotations
 """
-RSS feed generator for Yandex Dzen.
+RSS feed generator compatible with Yandex Dzen requirements.
 Stores last 50 posts in state/rss_posts.json and renders feed.xml.
 """
 
 import json
-import re
 from datetime import datetime, timezone
 from email.utils import format_datetime
 from pathlib import Path
@@ -14,8 +13,8 @@ POSTS_FILE = Path("state/rss_posts.json")
 MAX_POSTS  = 50
 
 CHANNEL_TITLE       = "KICKSY"
-CHANNEL_DESCRIPTION = "Кроссовки, стритвир, Poizon — всё о культуре кед"
 CHANNEL_LINK        = "https://t.me/kicksy_poizon"
+CHANNEL_DESCRIPTION = "Кроссовки, стритвир, Poizon — всё о культуре кед"
 
 
 def _load() -> list[dict]:
@@ -32,10 +31,9 @@ def _save(posts: list[dict]):
     POSTS_FILE.write_text(json.dumps(posts, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def add_post(post_id: str, text: str, photos: list[str], tg_url: str, vk_url: str = ""):
-    """Add a post to the RSS history. Call after successful VK publish."""
+def add_post(post_id: str, text: str, photos: list[str],
+             tg_url: str, vk_url: str = "", videos: list[str] | None = None):
     posts = _load()
-    # Skip duplicates
     if any(p["id"] == post_id for p in posts):
         return
 
@@ -45,52 +43,85 @@ def add_post(post_id: str, text: str, photos: list[str], tg_url: str, vk_url: st
         "id":      post_id,
         "title":   title,
         "text":    text,
-        "photos":  photos,
+        "photos":  photos or [],
+        "videos":  videos or [],
         "tg_url":  tg_url,
         "vk_url":  vk_url,
         "pubdate": format_datetime(datetime.now(timezone.utc)),
     })
 
-    # Keep newest MAX_POSTS
     posts = sorted(posts, key=lambda p: int(p["id"]) if p["id"].isdigit() else 0, reverse=True)
     _save(posts[:MAX_POSTS])
 
 
-def _escape(s: str) -> str:
+def _x(s: str) -> str:
+    """Escape XML special chars."""
     return (s.replace("&", "&amp;")
              .replace("<", "&lt;")
              .replace(">", "&gt;")
              .replace('"', "&quot;"))
 
 
-def _post_to_item(p: dict) -> str:
-    title   = _escape(p["title"])
-    tg_url  = _escape(p["tg_url"])
-    pubdate = _escape(p["pubdate"])
+def _build_content(p: dict) -> str:
+    """Build content:encoded HTML per Dzen spec."""
+    lines = []
 
-    # Build HTML description
-    body = _escape(p["text"]).replace("\n", "<br/>")
-    images_html = "".join(
-        f'<img src="{_escape(url)}"/>' for url in (p.get("photos") or [])[:4]
-    )
+    # Title as h2 inside content
+    lines.append(f"<h2>{p['title']}</h2>")
+
+    # Images as figure/img
+    for url in p.get("photos") or []:
+        lines.append(f'<figure><img src="{url}"/></figure>')
+
+    # Videos
+    for url in p.get("videos") or []:
+        lines.append(f'<video><source src="{url}" type="video/mp4"/></video>')
+
+    # Text paragraphs
+    if p.get("text"):
+        for para in p["text"].split("\n\n"):
+            para = para.strip()
+            if para:
+                lines.append(f"<p>{para.replace(chr(10), '<br/>')}</p>")
+
+    # Links
     if p.get("vk_url"):
-        body += f'<br/><br/><a href="{_escape(p["vk_url"])}">Смотреть в VK</a>'
-    body += f'<br/><a href="{tg_url}">Полный пост в Telegram</a>'
+        lines.append(f'<p><a href="{p["vk_url"]}">Смотреть пост в VK</a></p>')
+    lines.append(f'<p><a href="{p["tg_url"]}">Полный пост в Telegram</a></p>')
 
-    description = f"<![CDATA[{images_html}<p>{body}</p>]]>"
+    return "\n".join(lines)
 
+
+def _post_to_item(p: dict) -> str:
+    title   = _x(p["title"])
+    link    = _x(p["tg_url"])
+    guid    = f"kicksy-{p['id']}"
+    pubdate = _x(p["pubdate"])
+    desc    = _x((p.get("text") or "")[:200].replace("\n", " "))
+
+    # Cover image enclosure
     enclosure = ""
     if p.get("photos"):
-        enclosure = f'<enclosure url="{_escape(p["photos"][0])}" type="image/jpeg"/>'
+        enclosure = f'\n    <enclosure url="{_x(p["photos"][0])}" type="image/jpeg"/>'
+
+    # format-post for short content, format-article for longer
+    text_len = len(p.get("text") or "")
+    fmt = "format-post" if (text_len < 600 and len(p.get("photos") or []) <= 10) else "format-article"
+
+    content = _build_content(p)
 
     return f"""
   <item>
     <title>{title}</title>
-    <link>{tg_url}</link>
-    <guid isPermaLink="false">kicksy-{p["id"]}</guid>
+    <link>{link}</link>
+    <guid isPermaLink="false">{guid}</guid>
     <pubDate>{pubdate}</pubDate>
-    <description>{description}</description>
-    {enclosure}
+    <description>{desc}</description>
+    <category>{fmt}</category>
+    <category>index</category>
+    <category>comment-all</category>
+    <media:rating scheme="urn:simple">nonadult</media:rating>{enclosure}
+    <content:encoded><![CDATA[{content}]]></content:encoded>
   </item>"""
 
 
@@ -100,11 +131,15 @@ def build_feed() -> str:
     now   = format_datetime(datetime.now(timezone.utc))
 
     return f"""<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/">
+<rss version="2.0"
+  xmlns:content="http://purl.org/rss/1.0/modules/content/"
+  xmlns:dc="http://purl.org/dc/elements/1.1/"
+  xmlns:media="http://search.yahoo.com/mrss/"
+  xmlns:atom="http://www.w3.org/2005/Atom">
   <channel>
-    <title>{_escape(CHANNEL_TITLE)}</title>
-    <link>{_escape(CHANNEL_LINK)}</link>
-    <description>{_escape(CHANNEL_DESCRIPTION)}</description>
+    <title>{_x(CHANNEL_TITLE)}</title>
+    <link>{_x(CHANNEL_LINK)}</link>
+    <description>{_x(CHANNEL_DESCRIPTION)}</description>
     <language>ru</language>
     <lastBuildDate>{now}</lastBuildDate>
     {items}

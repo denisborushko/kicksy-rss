@@ -226,7 +226,7 @@ async def post_to_vk(session: aiohttp.ClientSession, post: dict):
 
     # Обновляем RSS и пушим на GitHub Pages
     tg_url = f"https://t.me/{TG_CHANNEL}/{post['id']}"
-    rss_store.add_post(post["id"], post["text"], post.get("photos", []), tg_url, vk_link)
+    rss_store.add_post(post["id"], post["text"], post.get("photos", []), tg_url, vk_link, post.get("videos", []))
     await push_feed(rss_store.build_feed())
 
     preview = (post["text"] or "")[:80].replace("\n", " ")
